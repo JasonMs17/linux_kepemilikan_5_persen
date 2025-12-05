@@ -1,0 +1,8 @@
+requests
+cloudscraper
+supabase
+pydantic
+pydantic-core
+cryptography
+python-dotenv
+playwright

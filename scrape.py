@@ -27,6 +27,8 @@ import random
 import subprocess
 from pathlib import Path
 from send_message_only import send_message_only
+import csv
+from summarize_helper import process_summary
 
 # --- 2. Configuration ---
 load_dotenv()
@@ -58,6 +60,18 @@ scraper = cloudscraper.create_scraper()
 all_data = []
 to_insert = []
 stop_scraping = False
+
+# Define keywords for summarization
+SUMMARY_KEYWORDS = [
+    "volatilitas",
+    "rapat",
+    "dividen",
+    "laporan kepemilikan",
+    "perubahan pengurus",
+    "kembali"
+]
+
+SUMMARY_LOG_FILE = "summary_logs.csv"
 
 # --- 2b. Setup folder untuk PDF Lamp1 ---
 lamp1_folder = Path("5_persen/pdf")
@@ -222,13 +236,9 @@ while True:
             break
         else:
             print(f"Pengumuman baru: {tanggal} - {judul}")
-            to_insert_page.append({
-                "tanggal": tanggal,
-                "judul": judul,
-                "kode_emiten": kode_emiten,
-                "attachment": cleaned_attachments
-            })
-            existing_keys.add(key)
+            
+            # Initialize summary
+            summary = None
             
             # --- Check untuk "5%" di judul ---
             if "5%" in judul and not has_5percent_today:
@@ -236,6 +246,38 @@ while True:
                 process_lamp1_pdf(cleaned_attachments)
             elif "5%" in judul and has_5percent_today:
                 print(f"⏭ Pengumuman '5%' sudah pernah diproses hari ini, skip ekstraksi.")
+
+            # --- Check untuk summarization keywords ---
+            should_summarize = any(k.lower() in judul.lower() for k in SUMMARY_KEYWORDS)
+            if should_summarize:
+                print(f"🔍 Judul mengandung keyword penting, melakukan summarization...")
+                # Find PDF attachment (prefer Lamp1 or just the first one)
+                target_pdf_url = None
+                for att in cleaned_attachments:
+                    if att.get("FullSavePath"):
+                        target_pdf_url = att.get("FullSavePath")
+                        # Prefer lampiran over others if multiple? Usually just take the first valid PDF.
+                        if "lamp" in att.get("OriginalFilename", "").lower():
+                             break
+                
+                if target_pdf_url:
+                    print(f"   Processing PDF: {target_pdf_url}")
+                    summary_result = process_summary(target_pdf_url, tanggal, judul, kode_emiten)
+                    if summary_result["success"]:
+                        summary = summary_result["summary"]
+                    
+                    print(f"   ✅ Summary logged to {SUMMARY_LOG_FILE}")
+                else:
+                    print("   ⚠ No PDF attachment found for summarization.")
+            
+            to_insert_page.append({
+                "tanggal": tanggal,
+                "judul": judul,
+                "kode_emiten": kode_emiten,
+                "attachment": cleaned_attachments,
+                "summary": summary
+            })
+            existing_keys.add(key)
 
         cleaned_item = {
             "pengumuman": {

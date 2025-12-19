@@ -46,7 +46,7 @@ start_of_day = datetime.date.today().strftime("%Y-%m-%d") + "T00:00:00+00"
 end_of_day = datetime.date.today().strftime("%Y-%m-%d") + "T23:59:59+00"
 
 params = {
-    "kodeEmiten": "",
+    "kodeEmiten": "BUMI",
     "emitenType": "*",
     "indexFrom": 0,
     "pageSize": 10,
@@ -138,10 +138,10 @@ def process_lamp1_pdf(attachments):
                     f.write(chunk)
         print(f"✔ Download selesai: {filepath}")
         
-        # Panggil extract_pdf_to_csv.js
-        print(f"🔄 Menjalankan extract_pdf_to_csv.js...")
+        # Panggil extract_bounding_box.py
+        print(f"🔄 Menjalankan extract_bounding_box.py...")
         result = subprocess.run(
-            ["node", "extract_pdf_to_csv.js"],
+            ["python", "extract_bounding_box.py", str(filepath)],
             cwd="5_persen",
             capture_output=True,
             text=True,

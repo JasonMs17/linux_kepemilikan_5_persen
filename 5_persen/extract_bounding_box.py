@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PDF_PATH = sys.argv[1] if len(sys.argv) > 1 else "pdf/20251217.pdf"
+PDF_PATH = sys.argv[1] if len(sys.argv) > 1 else "pdf/20251216.pdf"
 COLUMN_PAGE_INDEX = 1   # halaman khusus untuk baca kolom dari pixel merah
 
 # Headers for CSV
@@ -19,8 +19,55 @@ headers = [
     'jmlh_after','gabungan_after','percent_after','perubahan'
 ]
 
+# Month mapping
+MONTH_MAP = {
+    'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+    'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+    'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+}
+
+# Fungsi untuk extract tanggal dari halaman pertama PDF
+def extract_date_from_pdf(pdf_path):
+    """Extract tanggal dengan format DD-MMM-YYYY dari halaman pertama PDF"""
+    try:
+        pdf = fitz.open(pdf_path)
+        first_page = pdf[0]
+        text = first_page.get_text()
+        pdf.close()
+        
+        print("\n🔍 Mencari tanggal dari halaman pertama PDF...")
+        
+        # Pattern untuk DD-MMM-YYYY (misal: 16-DEC-2025)
+        import re
+        pattern = r'(\d{1,2})-(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)-(\d{4})'
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        
+        found_dates = []
+        for match in matches:
+            day = match.group(1).zfill(2)
+            month_str = match.group(2).upper()
+            year = match.group(3)
+            month = MONTH_MAP.get(month_str)
+            if month:
+                iso_date = f"{year}-{month}-{day}"
+                found_dates.append(iso_date)
+                print(f"✓ Tanggal ditemukan: {match.group(0)} → {iso_date}")
+        
+        if found_dates:
+            # Gunakan tanggal pertama yang ditemukan
+            selected_date = found_dates[0]
+            print(f"✔ Menggunakan tanggal: {selected_date}")
+            return selected_date
+        else:
+            print("❌ Tidak menemukan tanggal dengan format DD-MMM-YYYY di halaman pertama")
+            return None
+    
+    except Exception as e:
+        print(f"❌ Error saat extract tanggal dari PDF: {str(e)}")
+        return None
+
 # Fungsi untuk upsert data ke Supabase
-def upsertToSupabase(all_rows, filtered_rows, fileName):
+def upsertToSupabase(all_rows, filtered_rows, fileName, tanggal=None):
     print(f"\n📤 Upsert ke Supabase...")
     
     if not filtered_rows:
@@ -29,20 +76,9 @@ def upsertToSupabase(all_rows, filtered_rows, fileName):
 
     print(f"ℹ Total baris untuk upsert: {len(filtered_rows)}")
     
-    # Extract tanggal dari nama file (format: yyyymmdd.pdf)
-    # Konversi ke ISO format YYYY-MM-DD
-    import re
-    match = re.search(r'(\d{8})', fileName)
-    tanggal = None
-    if match:
-        dateStr = match.group(1)
-        year = dateStr[:4]
-        month = dateStr[4:6]
-        day = dateStr[6:8]
-        tanggal = f"{year}-{month}-{day}"
-
+    # Tanggal sudah diekstrak dari PDF, jika tidak ada maka fail
     if not tanggal:
-        print("❌ Tidak bisa ekstrak tanggal dari nama file:", fileName)
+        print("❌ Tanggal tidak ditemukan dari PDF. Upsert dibatalkan.")
         return
 
     # Simpan semua rows ke CSV file
@@ -61,9 +97,13 @@ def upsertToSupabase(all_rows, filtered_rows, fileName):
         print("❌ Error menyimpan CSV:", str(csvErr))
 
     # Format payload sesuai struktur tabel
+    full_data_count = count_unique_kodes_from_list(all_rows)
+    # Jika ingin debug full_data_count, uncomment baris berikut
+    # print("Full data count:", full_data_count)
     payload = {
         "tanggal": tanggal,
-        "data": filtered_rows
+        "data": filtered_rows,
+        "full_data_count": full_data_count
     }
 
     try:
@@ -91,6 +131,59 @@ def upsertToSupabase(all_rows, filtered_rows, fileName):
             print('No numbers found')
     except Exception as err:
         print("Error upsert ke Supabase:", str(err))
+
+# Fungsi untuk menghitung total unique kode (4 huruf kapital) dari list of list (all_rows)
+def count_unique_kodes_from_list(rows):
+    kode_data = {}
+    seen_entries = set()  # Track (kode, pemegang_saham, cleaned_percent_after) tuples
+    duplicate_count = 0
+    
+    for row in rows:
+        kode = row[1].strip() if len(row) > 1 else ''
+        if len(kode) == 4 and kode.isupper() and kode.isalpha():
+            pemegang_rek = row[3].strip() if len(row) > 3 else ''
+            pemegang_saham = row[4].strip() if len(row) > 4 else ''
+            percent_after = row[16].strip() if len(row) > 16 else ''
+            
+            # Clean percent_after: remove commas, spaces, and dots
+            percent_after_clean = percent_after.replace(',', '').replace(' ', '').replace('.', '')
+            
+            if pemegang_saham:  # Hanya count jika pemegang_saham tidak kosong
+                # Create a unique key for this entry
+                entry_key = (kode, pemegang_saham, percent_after_clean)
+                
+                # Only process if we haven't seen this exact combination before
+                if entry_key not in seen_entries:
+                    seen_entries.add(entry_key)
+                    
+                    if kode not in kode_data:
+                        kode_data[kode] = {
+                            "count": 0,
+                            "columns": []
+                        }
+                    kode_data[kode]["count"] += 1
+                    kode_data[kode]["columns"].append({
+                        "kode": kode,
+                        "pemegang_saham": pemegang_saham,
+                        "percent_after": percent_after  # Store original version, not cleaned
+                    })
+                else:
+                    duplicate_count += 1
+                    print(f"⚠ Duplicate removed: {kode} | {pemegang_saham} | {percent_after} (original) → {percent_after_clean} (clean)")
+    
+    if duplicate_count > 0:
+        print(f"\n📊 Total duplikat yang dihapus: {duplicate_count}")
+    
+    return kode_data
+
+# Fungsi untuk menghitung total unique kode (4 huruf kapital) dari list of dict (filtered_rows)
+def count_unique_kodes(filtered_rows):
+    kode_counts = {}
+    for row in filtered_rows:
+        kode = row.get('kode', '').strip()
+        if len(kode) == 4 and kode.isupper() and kode.isalpha():
+            kode_counts[kode] = kode_counts.get(kode, 0) + 1
+    return kode_counts
 
 # =======================================================
 # 1. DETEKSI KOLOM DARI PIXEL MERAH PALING BAWAH
@@ -199,11 +292,61 @@ def assign_words_to_columns(rows, column_blocks):
         assigned.append(cols)
     return assigned
 
+# Fungsi untuk fill missing kode berdasarkan required columns
+def fill_missing_kode(all_rows, required_indices):
+    # Iterate tanpa sort, asumsikan urutan sudah berdasarkan No
+    for i in range(len(all_rows)):
+        # Check jika kolom kode (index 1) kosong
+        if not all_rows[i][1].strip():
+            # Check apakah baris ini memiliki semua required columns (kecuali kode)
+            has_required = True
+            for idx in required_indices:
+                if idx != 1:  # Skip kode index
+                    if idx >= len(all_rows[i]) or not all_rows[i][idx].strip():
+                        has_required = False
+                        break
+            
+            # Jika punya required columns lain, coba fill kode
+            if has_required:
+                current_no = all_rows[i][0].strip()
+                
+                # Strategy 1: Cek baris langsung atas dan bawah (original logic)
+                kode_atas = all_rows[i-1][1].strip() if i > 0 else ''
+                kode_bawah = all_rows[i+1][1].strip() if i < len(all_rows)-1 else ''
+                
+                # Strategy 2: Jika nomor baris saat ini ada, cari grup dengan nomor yang sama
+                # Cari kode di atas grup nomor yang sama dan di bawah grup
+                if current_no:
+                    # Cari kode sebelum grup nomor ini
+                    kode_before_group = ''
+                    for j in range(i - 1, -1, -1):
+                        if all_rows[j][0].strip() != current_no:
+                            kode_before_group = all_rows[j][1].strip()
+                            break
+                    
+                    # Cari kode setelah grup nomor ini
+                    kode_after_group = ''
+                    for j in range(i + 1, len(all_rows)):
+                        if all_rows[j][0].strip() != current_no:
+                            kode_after_group = all_rows[j][1].strip()
+                            break
+                    
+                    # Gunakan kode dari grup logic jika tersedia dan sama
+                    if kode_before_group and kode_after_group and kode_before_group == kode_after_group:
+                        kode_atas = kode_before_group
+                        kode_bawah = kode_after_group
+                
+                if kode_atas and kode_bawah and kode_atas == kode_bawah:
+                    all_rows[i][1] = kode_atas
+                    no_val = current_no if current_no else "unknown"
+                    print(f"✓ Filled missing kode for No {no_val} with {kode_atas}")
+
 # =======================================================
 # MAIN
 # =======================================================
 if __name__ == "__main__":
     pdf = fitz.open(PDF_PATH)
+    fileName = os.path.basename(PDF_PATH)  # Define fileName here
     # 1) ambil kolom dari pixel merah (hanya halaman index 2)
     col_blocks = detect_columns_from_red_pixel(PDF_PATH, COLUMN_PAGE_INDEX)
     all_rows = []
@@ -215,8 +358,26 @@ if __name__ == "__main__":
         table_rows = assign_words_to_columns(rows, col_blocks)
         all_rows.extend(table_rows)
     
+    # Simpan raw CSV sebelum fill (urutan asli)
+    rawCsvFileName = fileName.replace('.pdf', '_raw.csv')
+    rawCsvFilePath = os.path.join("csv", rawCsvFileName)
+    os.makedirs("csv", exist_ok=True)
+    try:
+        with open(rawCsvFilePath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            for r in all_rows:
+                writer.writerow(r)
+        print(f"💾 Raw CSV tersimpan: {rawCsvFilePath}")
+    except Exception as rawCsvErr:
+        print("❌ Error menyimpan raw CSV:", str(rawCsvErr))
+    
     # Filter rows yang memiliki kolom required
-    required_indices = [0, 1, 2, 3, 12, 13, 15, 16]  # No, kode, emiten, pemegang_rek, gabungan_before, percent_before, gabungan_after, percent_after
+    required_indices = [0, 1, 2, 4, 12, 13, 15, 16]
+    
+    # Fill missing kode untuk baris yang punya required columns
+    fill_missing_kode(all_rows, required_indices)
+    
     filtered_rows = []
     for row in all_rows:
         if all(row[i].strip() for i in required_indices if i < len(row)):
@@ -244,6 +405,9 @@ if __name__ == "__main__":
     
     print(f"✔ Ekstraksi selesai: {len(filtered_rows)} baris")
     
+    # Extract tanggal dari halaman pertama PDF
+    tanggal = extract_date_from_pdf(PDF_PATH)
+    
     # Upsert ke Supabase
     fileName = os.path.basename(PDF_PATH)
-    upsertToSupabase(all_rows, filtered_rows, fileName)
+    upsertToSupabase(all_rows, filtered_rows, fileName, tanggal)

@@ -86,3 +86,4 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("Untuk test dengan URL berbeda, ubah variable 'attachments' di atas")
     print("="*60)
+    

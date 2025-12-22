@@ -46,7 +46,7 @@ start_of_day = datetime.date.today().strftime("%Y-%m-%d") + "T00:00:00+00"
 end_of_day = datetime.date.today().strftime("%Y-%m-%d") + "T23:59:59+00"
 
 params = {
-    "kodeEmiten": "BUMI",
+    "kodeEmiten": "*",
     "emitenType": "*",
     "indexFrom": 0,
     "pageSize": 10,
@@ -209,7 +209,10 @@ while True:
 
     data = resp.json()
     replies = data.get("Replies", [])
+    print(f"Response status: {resp.status_code}")
+    print(f"Number of replies: {len(replies)}")
     if not replies:
+        print("Full response data:", json.dumps(data, indent=2))
         print("Tidak ada balasan lagi, scraping dihentikan.")
         break
 
@@ -300,10 +303,6 @@ while True:
             print(f"Gagal memasukkan data ke Supabase: {e}")
 
     params["indexFrom"] += 1
-
-# --- 6. Simpan ke JSON ---
-with open('announcements_today.json', 'w', encoding='utf-8') as f:
-    json.dump(all_data, f, indent=2, ensure_ascii=False)
 
 print(f"Total pengumuman yang diproses: {len(all_data)}")
 for item in all_data[:5]:

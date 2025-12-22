@@ -136,30 +136,6 @@ async function upsertToSupabase(rows, fileName) {
     try {
         await upsertKepemilikan(payload);
         console.log(`✔ Berhasil upsert ${rows.length} baris untuk tanggal ${tanggal}`);
-        
-        // Print missing numbers
-        const csvContentRead = fs.readFileSync(csvFilePath, 'utf8');
-        const lines = csvContentRead.split('\n').slice(1); // skip header
-        const nos = new Set();
-        lines.forEach(line => {
-            if (line.trim()) {
-                const cols = line.split(',');
-                if (cols[0]) {
-                    const num = parseInt(cols[0]);
-                    if (!isNaN(num)) nos.add(num);
-                }
-            }
-        });
-        if (nos.size > 0) {
-            const maxNo = Math.max(...nos);
-            const missing = [];
-            for (let i = 1; i <= maxNo; i++) {
-                if (!nos.has(i)) missing.push(i);
-            }
-            console.log(`Missing numbers: ${missing.join(', ')}`);
-        } else {
-            console.log('No numbers found');
-        }
     } catch (err) {
         console.error("Error upsert ke Supabase:", err.message);
     }

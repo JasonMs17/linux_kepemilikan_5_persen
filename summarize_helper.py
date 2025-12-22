@@ -10,6 +10,8 @@ import datetime
 from pdf2image import convert_from_bytes
 from PIL import Image
 import time
+from prompts.default_prompt import default_system_prompt
+from prompts.volatilitas_prompt import volatilitas_system_prompt
 
 # Load API key
 load_dotenv()
@@ -93,19 +95,16 @@ def extract_text_with_ocr_space(pdf_bytes, max_pages=5, debug=False):
         print("OCR.space error:", e)
         return ""
 
-def summarize_text(text):
-    """Gunakan Groq API untuk merangkum teks"""
+def summarize_text(text, judul=None):
+    """Gunakan Groq API untuk merangkum teks dengan prompt yang sesuai"""
+    # Tentukan prompt berdasarkan keyword di judul
+    prompt = load_prompt(judul)
+    
     try:
         completion = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
-                {"role": "system", "content": """You are a financial assistant that reads company stock reports or shareholder announcements.
-First, identify the **main purpose or essence of the document** in simple terms, such as "monthly report of shareholding", "changes in ownership", or "announcement of treasury shares".
-Then, extract all **key numeric details** that are relevant for investment decisions.
-Include percentages and changes where available.
-Ignore administrative or cosmetic details like signatures, addresses, letter numbers, or dates unless they affect ownership information.
-Present the summary clearly, starting with the **main purpose**, followed by structured numeric data.
-Be concise but capture all data relevant for evaluating stock ownership and investment decisions."""},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": text}
             ],
             temperature=0.2,
@@ -116,6 +115,18 @@ Be concise but capture all data relevant for evaluating stock ownership and inve
         return completion.choices[0].message.content
     except Exception as e:
         return f"Error summarizing: {e}"
+
+def load_prompt(judul=None):
+    """Load prompt berdasarkan keyword di judul"""
+    if judul:
+        judul_lower = judul.lower()
+        
+        # Check volatilitas
+        if "volatilitas" in judul_lower:
+            return volatilitas_system_prompt
+    
+    # Default
+    return default_system_prompt
 
 def process_summary(url, tanggal=None, judul=None, kode_emiten=None, debug=False):
     result = {"success": False, "method": "none", "summary": "", "error": "", "extracted_text": ""}
@@ -132,33 +143,41 @@ def process_summary(url, tanggal=None, judul=None, kode_emiten=None, debug=False
         log_to_csv(tanggal, judul, kode_emiten, url, "Failed", "none", "", result["error"])
         return result
 
-    if debug: print("Starting text extraction with pdfplumber...")
+    # ===== DEFAULT: ALWAYS USE OCR =====
+    if debug: print("Starting text extraction with OCR.space...")
     start_time = time.time()
-    text = extract_text_from_pdf(pdf_bytes, debug=debug)
-    extract_time = time.time() - start_time
-    if debug: print(f"pdfplumber extraction completed in {extract_time:.2f}s, text length: {len(text)}")
-    method = "pdfplumber"
+    text = extract_text_with_ocr_space(pdf_bytes, debug=debug)
+    ocr_time = time.time() - start_time
+    if debug: print(f"OCR completed in {ocr_time:.2f}s, text length: {len(text)}")
+    method = "ocr_space"
     result["extracted_text"] = text
+    
+    if not text:
+        result["method"] = "failed"
+        result["error"] = "No text extracted"
+        if debug: print("OCR failed, logging...")
+        log_to_csv(tanggal, judul, kode_emiten, url, "Failed", "failed", "", result["error"])
+        return result
 
-    # Fallback OCR jika teks kosong atau terlalu sedikit
-    if len(text) < 50:
-        if debug: print("Text too short, starting OCR with OCR.space...")
-        start_time = time.time()
-        text = extract_text_with_ocr_space(pdf_bytes, debug=debug)
-        ocr_time = time.time() - start_time
-        if debug: print(f"OCR completed in {ocr_time:.2f}s, text length: {len(text)}")
-        method = "ocr_space"
-        result["extracted_text"] = text
-        if not text:
-            result["method"] = "failed"
-            result["error"] = "No text extracted"
-            if debug: print("OCR failed, logging...")
-            log_to_csv(tanggal, judul, kode_emiten, url, "Failed", "failed", "", result["error"])
-            return result
+    # ===== FALLBACK (pdfplumber jika OCR < 50 chars) - COMMENTED OUT =====
+    # if len(text) < 50:
+    #     if debug: print("OCR text too short, trying pdfplumber as fallback...")
+    #     start_time = time.time()
+    #     text = extract_text_from_pdf(pdf_bytes, debug=debug)
+    #     extract_time = time.time() - start_time
+    #     if debug: print(f"pdfplumber extraction completed in {extract_time:.2f}s, text length: {len(text)}")
+    #     method = "pdfplumber"
+    #     result["extracted_text"] = text
+    #     if not text:
+    #         result["method"] = "failed"
+    #         result["error"] = "No text extracted from both methods"
+    #         if debug: print("Both methods failed, logging...")
+    #         log_to_csv(tanggal, judul, kode_emiten, url, "Failed", "failed", "", result["error"])
+    #         return result
 
     if debug: print("Starting summarization with Groq...")
     start_time = time.time()
-    summary = summarize_text(text)
+    summary = summarize_text(text, judul)
     summary_time = time.time() - start_time
     if debug: print(f"Summarization completed in {summary_time:.2f}s")
     

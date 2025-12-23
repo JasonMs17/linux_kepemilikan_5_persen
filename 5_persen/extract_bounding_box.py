@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PDF_PATH = sys.argv[1] if len(sys.argv) > 1 else "pdf/20251216.pdf"
+PDF_PATH = sys.argv[1] if len(sys.argv) > 1 else "pdf/20251217.pdf"
 COLUMN_PAGE_INDEX = 1   # halaman khusus untuk baca kolom dari pixel merah
 
 # Headers for CSV
@@ -186,8 +186,36 @@ def count_unique_kodes(filtered_rows):
     return kode_counts
 
 # =======================================================
-# 1. DETEKSI KOLOM DARI PIXEL MERAH PALING BAWAH
+# HELPER: Check dan adjust column jika kode kosong semua
 # =======================================================
+def check_and_adjust_kode_column(filtered_rows, col_blocks):
+    """
+    Check apakah semua kode kosong. Jika ya, adjust column blocks dengan -1 start
+    Return: (adjusted_blocks, should_retry)
+    """
+    has_kode = False
+    for row in filtered_rows:
+        if row.get('kode', '').strip():
+            has_kode = True
+            break
+    
+    if has_kode:
+        return col_blocks, False
+    
+    print("\n⚠ Semua kode kosong! Mencoba adjust column width...")
+    
+    # Adjust kode column (index 1): subtract 1 from start
+    kode_col_idx = 1
+    if kode_col_idx < len(col_blocks):
+        start, end = col_blocks[kode_col_idx]
+        new_start = max(0, start - 1)
+        
+        if new_start != start:
+            print(f"📊 Adjust kolom kode: [{start}-{end}] → [{new_start}-{end}]")
+            col_blocks[kode_col_idx] = [new_start, end]
+            return col_blocks, True
+    
+    return col_blocks, False
 def detect_columns_from_red_pixel(pdf_path, page_index):
     pdf = fitz.open(pdf_path)
     page = pdf[page_index]
@@ -256,9 +284,10 @@ def extract_words_by_rows(page):
         x0, y0, x1, y1, text, *_ = w
         placed = False
         for row in rows:
-            # check if y overlaps (toleransi ±1px)
+            # check if y overlaps (toleransi ±3px)
             if abs(row["y"] - y0) < 3:
-                row["words"].append((x0, text))
+                x_center = (x0 + x1) / 2
+                row["words"].append((x_center, text))
                 placed = True
                 break
         if not placed:
@@ -279,7 +308,8 @@ def assign_words_to_columns(rows, column_blocks):
         cols = [""] * len(column_blocks)
         for x, text in row["words"]:
             for idx, (x1, x2) in enumerate(column_blocks):
-                if x1 <= x <= x2:
+                MARGIN = 1
+                if x1 - MARGIN <= x <= x2 + MARGIN:
                     if cols[idx] == "":
                         cols[idx] = text
                     else:
@@ -404,6 +434,62 @@ if __name__ == "__main__":
             filtered_rows.append(obj)
     
     print(f"✔ Ekstraksi selesai: {len(filtered_rows)} baris")
+    
+    # Check dan adjust kode column jika kosong semua
+    col_blocks, should_retry = check_and_adjust_kode_column(filtered_rows, col_blocks)
+    
+    if should_retry:
+        print("\n🔄 Re-extracting dengan adjusted column blocks...")
+        all_rows = []
+        
+        for page_index in range(1, len(pdf)):
+            page = pdf[page_index]
+            print(f"Processing page {page_index + 1} ...")
+            rows = extract_words_by_rows(page)
+            table_rows = assign_words_to_columns(rows, col_blocks)
+            all_rows.extend(table_rows)
+        
+        # Simpan raw CSV lagi dengan adjusted blocks
+        try:
+            with open(rawCsvFilePath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                for r in all_rows:
+                    writer.writerow(r)
+            print(f"💾 Raw CSV updated: {rawCsvFilePath}")
+        except Exception as rawCsvErr:
+            print("❌ Error menyimpan raw CSV:", str(rawCsvErr))
+        
+        # Fill missing kode lagi
+        fill_missing_kode(all_rows, required_indices)
+        
+        # Filter lagi
+        filtered_rows = []
+        for row in all_rows:
+            if all(row[i].strip() for i in required_indices if i < len(row)):
+                obj = {}
+                for idx, header in enumerate(headers):
+                    value = row[idx] if idx < len(row) else None
+                    obj[header] = value
+                
+                # Tambah percent_difference jika ada perbedaan
+                try:
+                    pa_str = obj.get('percent_after', '').replace(',', '').replace(' ', '').strip()
+                    pb_str = obj.get('percent_before', '').replace(',', '').replace(' ', '').strip()
+                    if pb_str == '-':
+                        obj['percent_before'] = '0'
+                        pb = 0
+                    else:
+                        pb = float(pb_str) if pb_str else None
+                    pa = float(pa_str) if pa_str else None
+                    if pa is not None and pb is not None:
+                        obj['percent_difference'] = pa - pb
+                except ValueError:
+                    pass
+                
+                filtered_rows.append(obj)
+        
+        print(f"✔ Re-ekstraksi selesai: {len(filtered_rows)} baris")
     
     # Extract tanggal dari halaman pertama PDF
     tanggal = extract_date_from_pdf(PDF_PATH)

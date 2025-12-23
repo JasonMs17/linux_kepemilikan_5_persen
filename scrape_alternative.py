@@ -42,7 +42,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 url = "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement"
 
 today = datetime.date.today().strftime("%Y%m%d")
-yesterday_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%d-%m-%Y")
 start_of_day = datetime.date.today().strftime("%Y-%m-%d") + "T00:00:00+00"
 end_of_day = datetime.date.today().strftime("%Y-%m-%d") + "T23:59:59+00"
 
@@ -50,7 +49,7 @@ params = {
     "kodeEmiten": "*",
     "emitenType": "*",
     "indexFrom": 0,
-    "pageSize": 10,
+    "pageSize": 100,
     "dateFrom": today,
     "dateTo": today,
     "lang": "id",
@@ -60,16 +59,11 @@ params = {
 scraper = cloudscraper.create_scraper()
 all_data = []
 to_insert = []
-stop_scraping = False
+# stop_scraping = False  # dihapus karena hanya satu page
 
 # Define keywords for summarization
 SUMMARY_KEYWORDS = [
-    "volatilitas",
-    "rapat",
-    "dividen",
-    "laporan kepemilikan",
-    "perubahan pengurus",
-    "kembali"
+
 ]
 
 SUMMARY_LOG_FILE = "summary_logs.csv"
@@ -80,33 +74,32 @@ lamp1_folder.mkdir(parents=True, exist_ok=True)
 
 print(f"=== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-# --- 3. Ambil data dari Supabase untuk hari ini ---
-# print(f"Mengambil data dari Supabase untuk hari ini ({today})...")
-existing_keys = set()
-has_5percent_today = False
+# --- 3. Ambil data dari Supabase untuk hari ini --- (dihapus karena hanya satu page dan selalu ekstrak 5%)
+# existing_keys = set()
+# has_5percent_today = False
 
-try:
-    response = (
-        supabase.table("idx_keterbukaan_informasi")
-        .select("tanggal, judul")
-        .gte("tanggal", start_of_day)
-        .lte("tanggal", end_of_day)
-        .execute()
-    )
-    # Normalisasi format tanggal dari database (hapus spasi dan timezone, gunakan format ISO)
-    for item in response.data:
-        db_tanggal = item['tanggal']
-        # Konversi format "2025-12-01 15:03:13+00" ke "2025-12-01T15:03:13"
-        normalized_tanggal = db_tanggal.replace(" ", "T").split("+")[0].split("Z")[0]
-        judul = item['judul']
-        existing_keys.add((normalized_tanggal, judul))
+# try:
+#     response = (
+#         supabase.table("idx_keterbukaan_informasi")
+#         .select("tanggal, judul")
+#         .gte("tanggal", start_of_day)
+#         .lte("tanggal", end_of_day)
+#         .execute()
+#     )
+#     # Normalisasi format tanggal dari database (hapus spasi dan timezone, gunakan format ISO)
+#     for item in response.data:
+#         db_tanggal = item['tanggal']
+#         # Konversi format "2025-12-01 15:03:13+00" ke "2025-12-01T15:03:13"
+#         normalized_tanggal = db_tanggal.replace(" ", "T").split("+")[0].split("Z")[0]
+#         judul = item['judul']
+#         existing_keys.add((normalized_tanggal, judul))
         
-        # Cek apakah sudah ada pengumuman dengan "5%" di database hari ini
-        if "5%" in judul:
-            has_5percent_today = True
-            print(f"📌 Pengumuman dengan '5%' sudah ada di database: {judul}")
-except Exception as e:
-    print(f"Gagal mengambil data dari Supabase: {e}")
+#         # Cek apakah sudah ada pengumuman dengan "5%" di database hari ini
+#         if "5%" in judul:
+#             has_5percent_today = True
+#             print(f"📌 Pengumuman dengan '5%' sudah ada di database: {judul}")
+# except Exception as e:
+#     print(f"Gagal mengambil data dari Supabase: {e}")
 
 # --- 3b. Fungsi untuk download dan extract PDF Lamp1 ---
 def process_lamp1_pdf(attachments):
@@ -153,66 +146,60 @@ def process_lamp1_pdf(attachments):
             if result.stdout:
                 print(result.stdout)
             # Kirim notifikasi berhasil
+            today_date = datetime.date.today().strftime("%d-%m-%Y")
             send_message_only(
-                title="✅ Data kepemilikan 5%",
-                message=f"Berhasil ({yesterday_date})"
+                title="Data kepemilikan 5%",
+                message=today_date
             )
         else:
             print("❌ Ekstraksi PDF gagal")
             if result.stderr:
                 print(result.stderr)
             # Kirim notifikasi gagal
-            send_message_only(
-                title="Data kepemilikan 5% - GAGAL",
-                message=f"{yesterday_date} - Ekstraksi PDF gagal"
-            )
+            today_date = datetime.date.today().strftime("%d-%m-%Y")
+            # send_message_only(
+            #     title="Data kepemilikan 5% - GAGAL",
+            #     message=f"{today_date} - Ekstraksi PDF gagal"
+            # )
     except Exception as e:
         print(f"❌ Error processing Lamp1: {e}")
         # Kirim notifikasi error
+        today_date = datetime.date.today().strftime("%d-%m-%Y")
         send_message_only(
             title="Data kepemilikan 5% - ERROR",
-            message=f"{yesterday_date} - {str(e)}"
+            message=f"{today_date} - {str(e)}"
         )
 
-# --- 4. Loop Scraping ---
-while True:
-    if stop_scraping:
-        # print("Scraping dihentikan karena duplikat ditemukan.")
-        break
+# --- 4. Scraping satu page ---
+print(f"Checking page: {params['indexFrom']}")
 
-    print(f"Checking page: {params['indexFrom']}")
-    
-    # Retry logic untuk handle 403 atau error lainnya
-    max_retries = 3
-    retry_delay = 30
-    success = False
-    
-    for attempt in range(max_retries):
-        try:
-            resp = scraper.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-            success = True
+# Retry logic untuk handle 403 atau error lainnya
+max_retries = 3
+retry_delay = 30
+success = False
+
+for attempt in range(max_retries):
+    try:
+        resp = scraper.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        success = True
+        break
+    except requests.exceptions.RequestException as e:
+        if attempt < max_retries - 1:
+            print(f"Request gagal (attempt {attempt + 1}/{max_retries}): {e}")
+            print(f"Retry dalam {retry_delay} detik...")
+            time.sleep(retry_delay)
+        else:
+            print(f"Request gagal setelah {max_retries} percobaan: {e}")
             break
-        except requests.exceptions.RequestException as e:
-            if attempt < max_retries - 1:
-                print(f"Request gagal (attempt {attempt + 1}/{max_retries}): {e}")
-                print(f"Retry dalam {retry_delay} detik...")
-                time.sleep(retry_delay)
-            else:
-                print(f"Request gagal setelah {max_retries} percobaan: {e}")
-                break
-    
-    if not success:
-        break
 
+if not success:
+    print("Scraping gagal.")
+else:
     data = resp.json()
     replies = data.get("Replies", [])
     print(f"Response status: {resp.status_code}")
     print(f"Number of replies: {len(replies)}")
-    if not replies:
-        print("Full response data:", json.dumps(data, indent=2))
-        print("Tidak ada balasan lagi, scraping dihentikan.")
-        break
 
     to_insert_page = []
 
@@ -230,47 +217,41 @@ while True:
                 "FullSavePath": att.get("FullSavePath")
             })
 
-        key = (tanggal, judul)
-        if key in existing_keys:
-            print(f"Duplikat ditemukan: {tanggal} - {judul}")
-            stop_scraping = True
-            break
-        else:
-            print(f"Pengumuman baru: {tanggal} - {judul}")
-            
-            # Initialize summary
-            summary = None
-            
-            # --- Check untuk "5%" di judul ---
-            if "5%" in judul and not has_5percent_today:
-                print(f"✅ Ditemukan '5%' di judul (belum ada di DB): {judul}")
-                process_lamp1_pdf(cleaned_attachments)
-            elif "5%" in judul and has_5percent_today:
-                print(f"⏭ Pengumuman '5%' sudah pernah diproses hari ini, skip ekstraksi.")
+        print(f"Pengumuman: {tanggal} - {judul}")
+        
+        # Initialize summary
+        summary = None
+        
+        # --- Check untuk "5%" di judul ---
+        if "5%" in judul:
+            print(f"✅ Ditemukan '5%' di judul: {judul}")
+            process_lamp1_pdf(cleaned_attachments)
 
-            # --- Check untuk summarization keywords ---
-            should_summarize = any(k.lower() in judul.lower() for k in SUMMARY_KEYWORDS)
-            if should_summarize:
-                print(f"🔍 Judul mengandung keyword penting, melakukan summarization...")
-                # Find PDF attachment (prefer Lamp1 or just the first one)
-                target_pdf_url = None
-                for att in cleaned_attachments:
-                    if att.get("FullSavePath"):
-                        target_pdf_url = att.get("FullSavePath")
-                        # Prefer lampiran over others if multiple? Usually just take the first valid PDF.
-                        if "lamp" in att.get("OriginalFilename", "").lower():
-                             break
-                
-                if target_pdf_url:
-                    print(f"   Processing PDF: {target_pdf_url}")
-                    summary_result = process_summary(target_pdf_url, tanggal, judul, kode_emiten)
-                    if summary_result["success"]:
-                        summary = summary_result["summary"]
-                    
-                    print(f"   ✅ Summary logged to {SUMMARY_LOG_FILE}")
-                else:
-                    print("   ⚠ No PDF attachment found for summarization.")
+        # --- Check untuk summarization keywords ---
+        should_summarize = any(k.lower() in judul.lower() for k in SUMMARY_KEYWORDS)
+        if should_summarize:
+            print(f"🔍 Judul mengandung keyword penting, melakukan summarization...")
+            # Find PDF attachment (prefer Lamp1 or just the first one)
+            target_pdf_url = None
+            for att in cleaned_attachments:
+                if att.get("FullSavePath"):
+                    target_pdf_url = att.get("FullSavePath")
+                    # Prefer lampiran over others if multiple? Usually just take the first valid PDF.
+                    if "lamp" in att.get("OriginalFilename", "").lower():
+                         break
             
+            if target_pdf_url:
+                print(f"   Processing PDF: {target_pdf_url}")
+                summary_result = process_summary(target_pdf_url, tanggal, judul, kode_emiten)
+                if summary_result["success"]:
+                    summary = summary_result["summary"]
+                
+                print(f"   ✅ Summary logged to {SUMMARY_LOG_FILE}")
+            else:
+                print("   ⚠ No PDF attachment found for summarization.")
+        
+        # --- Insert ke database hanya jika ada summary atau "5%" ---
+        if summary or "5%" in judul:
             to_insert_page.append({
                 "tanggal": tanggal,
                 "judul": judul,
@@ -278,7 +259,6 @@ while True:
                 "attachment": cleaned_attachments,
                 "summary": summary
             })
-            existing_keys.add(key)
 
         cleaned_item = {
             "pengumuman": {
@@ -294,13 +274,11 @@ while True:
 
     # --- 5. Insert batch ke Supabase ---
     if to_insert_page:
-        print(f"Memasukkan {len(to_insert_page)} pengumuman baru ke database.")
+        print(f"Memasukkan {len(to_insert_page)} pengumuman penting ke database.")
         try:
             supabase.table("idx_keterbukaan_informasi").insert(to_insert_page).execute()
         except Exception as e:
             print(f"Gagal memasukkan data ke Supabase: {e}")
-
-    params["indexFrom"] += 1
 
 print(f"Total pengumuman yang diproses: {len(all_data)}")
 for item in all_data[:5]:

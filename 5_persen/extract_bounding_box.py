@@ -1,15 +1,17 @@
+# -*- coding: utf-8 -*-
 import fitz
 import numpy as np
 import csv
 import os
 import sys
+import io
 from conn import upsertKepemilikan
 from dotenv import load_dotenv
 
 load_dotenv()
 
 PDF_PATH = sys.argv[1] if len(sys.argv) > 1 else "pdf/20251217.pdf"
-COLUMN_PAGE_INDEX = 1   # halaman khusus untuk baca kolom dari pixel merah
+COLUMN_PAGE_INDEX = 2   # halaman khusus untuk baca kolom dari pixel merah
 
 # Headers for CSV
 headers = [
@@ -35,7 +37,7 @@ def extract_date_from_pdf(pdf_path):
         text = first_page.get_text()
         pdf.close()
         
-        print("\n🔍 Mencari tanggal dari halaman pertama PDF...")
+        print("\nMencari tanggal dari halaman pertama PDF...")
         
         # Pattern untuk DD-MMM-YYYY (misal: 16-DEC-2025)
         import re
@@ -59,16 +61,16 @@ def extract_date_from_pdf(pdf_path):
             print(f"✔ Menggunakan tanggal: {selected_date}")
             return selected_date
         else:
-            print("❌ Tidak menemukan tanggal dengan format DD-MMM-YYYY di halaman pertama")
+            print("Tidak menemukan tanggal dengan format DD-MMM-YYYY di halaman pertama")
             return None
     
     except Exception as e:
-        print(f"❌ Error saat extract tanggal dari PDF: {str(e)}")
+        print(f"Error saat extract tanggal dari PDF: {str(e)}")
         return None
 
 # Fungsi untuk upsert data ke Supabase
 def upsertToSupabase(all_rows, filtered_rows, fileName, tanggal=None):
-    print(f"\n📤 Upsert ke Supabase...")
+    print(f"\nUpsert ke Supabase...")
     
     if not filtered_rows:
         print("ℹ Tidak ada data untuk di-upsert.")
@@ -78,7 +80,7 @@ def upsertToSupabase(all_rows, filtered_rows, fileName, tanggal=None):
     
     # Tanggal sudah diekstrak dari PDF, jika tidak ada maka fail
     if not tanggal:
-        print("❌ Tanggal tidak ditemukan dari PDF. Upsert dibatalkan.")
+        print("Tanggal tidak ditemukan dari PDF. Upsert dibatalkan.")
         return
 
     # Simpan semua rows ke CSV file
@@ -92,9 +94,9 @@ def upsertToSupabase(all_rows, filtered_rows, fileName, tanggal=None):
             writer.writerow(headers)
             for r in all_rows:
                 writer.writerow(r)
-        print(f"💾 CSV tersimpan: {csvFilePath}")
+        print(f"CSV tersimpan: {csvFilePath}")
     except Exception as csvErr:
-        print("❌ Error menyimpan CSV:", str(csvErr))
+        print("Error menyimpan CSV:", str(csvErr))
 
     # Format payload sesuai struktur tabel
     full_data_count = count_unique_kodes_from_list(all_rows)
@@ -172,7 +174,7 @@ def count_unique_kodes_from_list(rows):
                     print(f"⚠ Duplicate removed: {kode} | {pemegang_saham} | {percent_after} (original) → {percent_after_clean} (clean)")
     
     if duplicate_count > 0:
-        print(f"\n📊 Total duplikat yang dihapus: {duplicate_count}")
+        print(f"\nTotal duplikat yang dihapus: {duplicate_count}")
     
     return kode_data
 
@@ -270,9 +272,9 @@ def detect_columns_from_red_pixel(pdf_path, page_index):
         if idx < len(blocks):
             blocks[idx][1] += 1
     
-    print("\n=== COLUMN DETECTED FROM PIXEL (PAGE 2) ===")
+    print("\n=== COLUMN DETECTED FRO PIXEL (PAGE 2) ===")
     for i, (x1, x2) in enumerate(blocks, 1):
-        print(f"Kolom {i}: x={x1} → {x2}, width={x2-x1+1}")
+        print(f"Kolom {i}: x={x1} menuju {x2}, width={x2-x1+1}")
     return blocks
 # =======================================================
 # 2. EXTRACT WORDS PER HALAMAN
@@ -321,6 +323,70 @@ def assign_words_to_columns(rows, column_blocks):
             continue
         assigned.append(cols)
     return assigned
+
+# Fungsi untuk merge baris yang split karena y-tolerance besar
+def merge_split_rows(all_rows):
+    """
+    Merge rows where shareholder names are split across multiple lines.
+    Pattern: If a row has pemegang_saham but no percent_after, merge with row above.
+    """
+    merged_rows = []
+    i = 0
+    merge_count = 0
+    
+    while i < len(all_rows):
+        current_row = all_rows[i]
+        
+        # Check if this row should be merged with previous
+        # Conditions: has pemegang_saham (col 4) but missing percent_after (col 16)
+        pemegang_saham = current_row[4].strip() if len(current_row) > 4 else ''
+        percent_after = current_row[16].strip() if len(current_row) > 16 else ''
+        kode = current_row[1].strip() if len(current_row) > 1 else ''
+        
+        # If has pemegang_saham but no percent_after, try to merge with previous row
+        if pemegang_saham and not percent_after and merged_rows:
+            prev_row = merged_rows[-1]
+            prev_kode = prev_row[1].strip() if len(prev_row) > 1 else ''
+            prev_percent = prev_row[16].strip() if len(prev_row) > 16 else ''
+            prev_pemegang = prev_row[4].strip() if len(prev_row) > 4 else ''
+            
+            # Merge if: 
+            # 1. Previous has percent_after, OR
+            # 2. Same kode (or both empty), suggesting they're part of same entry
+            should_merge = False
+            if prev_percent:
+                should_merge = True
+            elif kode == prev_kode or (not kode and not prev_kode):
+                should_merge = True
+            
+            if should_merge:
+                # Merge pemegang_saham with previous row
+                merged_rows[-1][4] = f"{prev_pemegang} {pemegang_saham}".strip()
+                
+                # Also merge other potentially split columns (nama_rek, alamat, etc.)
+                for col_idx in [5, 6, 7]:  # nama_rek, alamat, alamat_lanjutan
+                    if col_idx < len(current_row):
+                        current_val = current_row[col_idx].strip()
+                        if current_val and col_idx < len(merged_rows[-1]):
+                            prev_val = merged_rows[-1][col_idx].strip()
+                            if prev_val:
+                                merged_rows[-1][col_idx] = f"{prev_val} {current_val}".strip()
+                            else:
+                                merged_rows[-1][col_idx] = current_val
+                
+                merge_count += 1
+                print(f"✓ Merged split row: '{prev_pemegang}' + '{pemegang_saham}' → '{merged_rows[-1][4]}'")
+                i += 1
+                continue
+        
+        # If not merging, add current row as-is
+        merged_rows.append(current_row[:])  # Copy the row
+        i += 1
+    
+    if merge_count > 0:
+        print(f"\n✔ Total {merge_count} baris di-merge karena split pemegang_saham")
+    
+    return merged_rows
 
 # Fungsi untuk fill missing kode berdasarkan required columns
 def fill_missing_kode(all_rows, required_indices):
@@ -398,9 +464,12 @@ if __name__ == "__main__":
             writer.writerow(headers)
             for r in all_rows:
                 writer.writerow(r)
-        print(f"💾 Raw CSV tersimpan: {rawCsvFilePath}")
+        print(f"Raw CSV tersimpan: {rawCsvFilePath}")
     except Exception as rawCsvErr:
-        print("❌ Error menyimpan raw CSV:", str(rawCsvErr))
+        print("Error menyimpan raw CSV:", str(rawCsvErr))
+    
+    # Merge split rows (pemegang_saham yang terpisah karena y-tolerance)
+    all_rows = merge_split_rows(all_rows)
     
     # Filter rows yang memiliki kolom required
     required_indices = [0, 1, 2, 4, 12, 13, 15, 16]
@@ -456,9 +525,12 @@ if __name__ == "__main__":
                 writer.writerow(headers)
                 for r in all_rows:
                     writer.writerow(r)
-            print(f"💾 Raw CSV updated: {rawCsvFilePath}")
+            print(f"Raw CSV updated: {rawCsvFilePath}")
         except Exception as rawCsvErr:
-            print("❌ Error menyimpan raw CSV:", str(rawCsvErr))
+            print("Error menyimpan raw CSV:", str(rawCsvErr))
+        
+        # Merge split rows lagi setelah re-extraction
+        all_rows = merge_split_rows(all_rows)
         
         # Fill missing kode lagi
         fill_missing_kode(all_rows, required_indices)

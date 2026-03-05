@@ -4,9 +4,12 @@ import numpy as np
 import csv
 import os
 import sys
-import io
 from conn import upsertKepemilikan
 from dotenv import load_dotenv
+
+# Set UTF-8 encoding for stdout on Windows
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 load_dotenv()
 
@@ -472,7 +475,9 @@ if __name__ == "__main__":
     all_rows = merge_split_rows(all_rows)
     
     # Filter rows yang memiliki kolom required
-    required_indices = [0, 1, 2, 4, 12, 13, 15, 16]
+    # Note: Index 13 (percent_before) dihilangkan dari required_indices karena bisa kosong atau '-' 
+    # dan akan dinormalisasi kemudian
+    required_indices = [0, 1, 2, 4, 12, 15, 16]
     
     # Fill missing kode untuk baris yang punya required columns
     fill_missing_kode(all_rows, required_indices)
@@ -489,11 +494,14 @@ if __name__ == "__main__":
             try:
                 pa_str = obj.get('percent_after', '').replace(',', '').replace(' ', '').strip()
                 pb_str = obj.get('percent_before', '').replace(',', '').replace(' ', '').strip()
-                if pb_str == '-':
+                
+                # Normalize percent_before jika kosong atau '-'
+                if not pb_str or pb_str == '-':
                     obj['percent_before'] = '0'
                     pb = 0
                 else:
                     pb = float(pb_str) if pb_str else None
+                
                 pa = float(pa_str) if pa_str else None
                 if pa is not None and pb is not None:
                     obj['percent_difference'] = pa - pb
@@ -548,11 +556,14 @@ if __name__ == "__main__":
                 try:
                     pa_str = obj.get('percent_after', '').replace(',', '').replace(' ', '').strip()
                     pb_str = obj.get('percent_before', '').replace(',', '').replace(' ', '').strip()
-                    if pb_str == '-':
+                    
+                    # Normalize percent_before jika kosong atau '-'
+                    if not pb_str or pb_str == '-':
                         obj['percent_before'] = '0'
                         pb = 0
                     else:
                         pb = float(pb_str) if pb_str else None
+                    
                     pa = float(pa_str) if pa_str else None
                     if pa is not None and pb is not None:
                         obj['percent_difference'] = pa - pb
